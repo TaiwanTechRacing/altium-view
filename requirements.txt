@@ -1,1 +1,6 @@
 olefile>=0.46
+numpy
+scipy
+matplotlib
+Pillow
+PyMuPDF

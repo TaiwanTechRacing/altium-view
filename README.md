@@ -9,9 +9,13 @@ what the agent read.
 > **Humans: paste this to your coding agent, then stop reading.**
 >
 > ```
-> Clone this repo, run `python install.py`, then register my Altium project
-> with it and give me a summary of the design.
+> Clone https://github.com/TaiwanTechRacing/altium-view, run
+> `pip install -r requirements.txt` and `python install.py` in it, then
+> register my Altium project with it and give me a summary of the design.
 > ```
+>
+> The repo is private to the TaiwanTechRacing organisation: the account doing
+> the clone needs access to it.
 
 Everything below is written for that agent.
 
@@ -20,7 +24,7 @@ Everything below is written for that agent.
 ## Install
 
 ```bash
-pip install olefile          # the only dependency
+pip install -r requirements.txt   # everything below
 python install.py            # installs the altium-view-sch skill for this user
 python install.py --project  # or only for the repo you are standing in
 python install.py --check    # what is installed; changes nothing
@@ -28,6 +32,15 @@ python install.py --check    # what is installed; changes nothing
 
 `install.py` writes this checkout's absolute path into the skill, so the tool
 works from any directory afterwards. Re-run it if the repo moves.
+
+What each dependency is for:
+
+| Package | Needed by |
+|---|---|
+| `olefile` | everything: reading `.SchDoc` / `.PcbDoc` (schematic queries need only this) |
+| `numpy`, `scipy` | `pcb ...` commands: copper connectivity, clearance, path length |
+| `matplotlib`, `Pillow` | `pcb render` and the PNG views |
+| `PyMuPDF` | optional: `pdfgrep.py` / `pdfpage.py`, datasheet text search |
 
 ## Use
 
@@ -195,6 +208,9 @@ section count it makes one part look like four colliding designators.
 | `naming.py` | short names derived by comparison, not hard-coded |
 | `boards.py` | the selected project's boards |
 | `EXTRACT.md` | the Altium-MCP path, for golden netlists and as a fallback |
+| `altium_pcb.py` | `.PcbDoc` reader (see PCB layout below) |
+| `pcb_query.py` | the `pcb ...` commands |
+| `pdfgrep.py` / `pdfpage.py` | datasheet helpers: regex search / page text of a PDF |
 
 ## One standing caveat
 
