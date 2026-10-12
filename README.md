@@ -203,3 +203,19 @@ part — pin function, rating, polarity, timing — comes from Altium symbol
 metadata, which is a hint and is sometimes wrong; `kind` and `domain` are this
 tool's own heuristics. Check the manufacturer datasheet before relying on any
 of it.
+
+## PCB layout (`altium_pcb.py`, `pcb_query.py`)
+
+`altium_view.py pcb ...` reads each board's `.PcbDoc` directly (OLE storages:
+text records `Board6`/`Components6`/`Nets6`/`Polygons6`, binary records
+`Pads6`/`Tracks6`/`Arcs6`/`Vias6`/`Fills6`/`Regions6`/`ShapeBasedRegions6`,
+layouts per KiCad's Altium importer). The parse is cached in
+`<cache>/pcb/<PcbDoc stem>.json`, keyed by the file's size and mtime.
+
+- `altium_pcb.py` -- the parser; `read_pcb(path)` returns mm, Altium frame.
+- `pcb_query.py` -- `summary`, `check` (pad nets vs the schematic model, by
+  connectivity), `stack`, `part`, `net`, `near`, `dist`, `render` (matplotlib
+  PNG with highlighted nets, boxed parts, measurements and marks).
+
+Verified by `pcb check` on the quackDrive Control board: every placed pad sits
+on the net the schematic gives it.

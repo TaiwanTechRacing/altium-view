@@ -234,7 +234,8 @@ class Symbol:
             return px - comp.x, comp.y - py
 
         for g in graphics:
-            if g["part_id"] not in (-1, comp.part_id):
+            if (g["part_id"] not in (-1, comp.part_id)
+                    or g.get("display_mode", 0) != comp.display_mode):
                 continue
             kv = g["raw"]
             pts = [rel(px, py) for px, py in primitive_points(kv)]

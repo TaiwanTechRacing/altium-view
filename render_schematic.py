@@ -240,7 +240,8 @@ def render_sheet(sheet: Sheet, node_net: dict, title: str) -> str:
         add(f'<title>{esc(comp.designator)}  {esc(comp.comment)}  '
             f'[{esc(comp.lib_ref)}]</title>')
         for g in graphics_by_owner.get(comp.index, []):
-            if g["part_id"] not in (-1, comp.part_id):
+            if (g["part_id"] not in (-1, comp.part_id)
+                    or g.get("display_mode", 0) != comp.display_mode):
                 continue
             add(draw_graphic(g, cv))
         for pin in comp.pins:

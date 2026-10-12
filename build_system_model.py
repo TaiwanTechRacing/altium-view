@@ -674,6 +674,43 @@ def build_board(key: str, title: str) -> dict:
 # assembly + reporting
 # --------------------------------------------------------------------------
 
+def refresh_link_nets(links: list[dict], by_title: dict) -> None:
+    """
+    Put each board's own schematic net on both ends of every inter-board wire.
+
+    The multi-board document stores a net name per connector pin, but only as
+    of the last time it was synchronised with the child projects. A pin swapped
+    on one board since then still carries its old name there, so the link view
+    and every cross-board trace would describe a wiring that no longer exists
+    -- and hide exactly the mismatch the swap created. The cached name is kept
+    beside the live one so the gap can be reported.
+    """
+    index: dict[str, dict] = {}
+    for title, b in by_title.items():
+        index[title] = {
+            (nd["designator"], str(nd["pin"])): name
+            for name, rec in b["nets"].items() for nd in rec["nodes"]
+        }
+    for lk in links:
+        stale = []
+        for w in lk["wires"]:
+            for side in ("a", "b"):
+                pins = index.get(lk[f"{side}_board"])
+                if pins is None or w[f"{side}_pin"] is None:
+                    continue
+                live = pins.get((lk[f"{side}_connector"], str(w[f"{side}_pin"])))
+                cached = w[f"{side}_net"]
+                w[f"{side}_net_mbs"] = cached
+                if live is not None:
+                    w[f"{side}_net"] = live
+                if live != cached:
+                    stale.append({"side": side, "pin": w[f"{side}_pin"],
+                                  "board": lk[f"{side}_board"],
+                                  "connector": lk[f"{side}_connector"],
+                                  "mbs": cached, "schematic": live})
+        lk["mbs_stale"] = stale
+
+
 def bundle_links(links: list[dict]) -> list[dict]:
     """Summarise each board-to-board connector pair by signal function."""
     out = []
@@ -688,6 +725,7 @@ def bundle_links(links: list[dict]) -> list[dict]:
             "by_domain": dict(groups),
             "nets": sorted({(w["a_net"] or w["b_net"] or "?") for w in lk["wires"]}),
             "wires": lk["wires"],
+            "mbs_stale": lk.get("mbs_stale", []),
         })
     return out
 
@@ -709,6 +747,7 @@ def main(argv: list[str] | None = None) -> int:
     # diagram can land the link on the right functional block rather than on
     # the board as a whole.
     by_title = {b["title"]: b for b in boards}
+    refresh_link_nets(system["links"], by_title)
     links = bundle_links(system["links"])
     linked_connectors: dict[str, set[str]] = defaultdict(set)
     for lk in links:
@@ -720,6 +759,33 @@ def main(argv: list[str] | None = None) -> int:
             lk[f"{side}_room"] = comp["room"] if comp else None
             if board and comp:
                 linked_connectors[board["key"]].add(conn)
+
+    # A pin whose schematic net no longer matches the multi-board document
+    # was changed on its board after the last sync -- often a swap made on one
+    # board only, which leaves the two ends carrying different signals.
+    for lk in links:
+        if not lk["mbs_stale"]:
+            continue
+        pins = sorted({str(x["pin"]) for x in lk["mbs_stale"]}, key=lambda v: (len(v), v))
+        rows = []
+        for w in lk["wires"]:
+            if str(w["a_pin"]) in pins or str(w["b_pin"]) in pins:
+                rows.append(f"pin {w['a_pin']}/{w['b_pin']}: "
+                            f"{lk['a_board']} {w['a_net']} (MbsDoc {w['a_net_mbs']}) <-> "
+                            f"{lk['b_board']} {w['b_net']} (MbsDoc {w['b_net_mbs']})")
+        issue = {
+            "severity": "warning",
+            "kind": "multiboard_out_of_sync",
+            "where": f"{lk['designator']} {lk['a_connector']} <-> {lk['b_connector']}",
+            "detail": "a connector pin's net differs from the multi-board document, "
+                      "so a board changed after the last sync. Check the two ends "
+                      "still carry the same signal, then update the .MbsDoc: "
+                      + "; ".join(rows),
+        }
+        for side in ("a", "b"):
+            board = by_title.get(lk[f"{side}_board"])
+            if board is not None and any(x["side"] == side for x in lk["mbs_stale"]):
+                board["issues"].append(issue)
 
     # Connectors that no inter-board link touches are the system's edges:
     # DC input, motor phase lugs, encoder, CAN, JTAG, GLV supply.

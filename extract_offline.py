@@ -29,6 +29,21 @@ from netlist_offline import build_board
 ROOT = Path(__file__).resolve().parent
 
 
+
+def resolve_special(text: str, params: dict) -> str:
+    """Altium 'special strings': a Comment of '=Value' means "show the Value
+    parameter". Libraries use this a lot, and left unresolved every such part
+    reads as '=Value' -- useless for a review. Resolve up to two levels."""
+    lower = {k.lower(): v for k, v in (params or {}).items()}
+    for _ in range(2):
+        if not text or not text.startswith("=") or len(text) < 2:
+            break
+        hit = lower.get(text[1:].strip().lower())
+        if hit is None or hit == text:
+            break
+        text = hit
+    return text
+
 def digest(path: Path) -> dict:
     h = hashlib.sha256()
     with path.open("rb") as fh:
@@ -77,7 +92,7 @@ def board_components(board_key: str) -> tuple[dict, list[dict]]:
                 des = f"{comp.designator}_{room}" if room else comp.designator
                 out.append({
                     "designator": des,
-                    "comment": comp.comment,
+                    "comment": resolve_special(comp.comment, comp.parameters),
                     "unique_id": comp.unique_id,
                     "part_id": comp.part_id,
                     "sections": comp.sections,

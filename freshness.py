@@ -74,6 +74,41 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def refresh_spec() -> bool:
+    """
+    Re-read the board and sheet lists from the project files when any of them
+    is newer than the cached spec. A sheet renamed, added or removed in Altium
+    only shows up in the .PrjPcb, so trusting spec.json would look for files
+    that no longer exist and miss the ones that replaced them.
+    Returns True when the spec changed.
+    """
+    spec = P.spec
+    if not spec or not spec.get("root"):
+        return False
+    spec_file = P.out / "spec.json"
+    projects = [Path(spec["root"])] + [Path(b["project"]) for b in spec["boards"]]
+    try:
+        stamp = spec_file.stat().st_mtime
+        if all(p.exists() and p.stat().st_mtime <= stamp for p in projects):
+            return False
+    except OSError:
+        pass
+    import discover
+    try:
+        new = discover.describe(spec["root"])
+    except (OSError, ValueError):
+        return False
+    new["slug"] = spec["slug"]
+    if new["boards"] == spec["boards"] and new.get("mbs") == spec.get("mbs"):
+        os.utime(spec_file) if spec_file.exists() else None
+        return False
+    atomic_write_text(spec_file, json.dumps(new, indent=2, ensure_ascii=False))
+    project.use(new)
+    print("[altium-view] project file lists different sheets/boards -- spec "
+          "re-discovered", file=sys.stderr)
+    return True
+
+
 def expected_inputs() -> list[Path]:
     """What the model should be built from, read from the projects right now."""
     out: list[Path] = []
@@ -209,6 +244,8 @@ def ensure_fresh(auto: bool = True, drawings: bool = True) -> dict:
     Altium files are on a disk that is not mounted, where a failed rebuild
     would be worse than a stale answer.
     """
+    if not os.environ.get("ALTIUM_VIEW_NO_REFRESH"):
+        refresh_spec()
     st = status()
     if st["fresh"]:
         return {**st, "rebuilt": False}

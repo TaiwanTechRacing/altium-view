@@ -1,6 +1,6 @@
 ---
 name: altium-view-sch
-description: Read any Altium design without opening Altium — boards, sheets, components, pins, nets, board-to-board links — by pointing a tool at a .PrjMbd or .PrjPcb once and then querying it. Use for any hardware question about a PCB project on this machine: what a part is, what a pin connects to, where a signal goes, what is on a sheet, which supply feeds what, which board something lives on, what the whole circuit looks like. Triggers on Altium, schematic, PrjMbd, PrjPcb, SchDoc, netlist, designator (IC20, U1_U_PHASE, Q1), a net name, "what's connected to", "trace this signal", "which board", "show me the circuit", and on a project name you have registered.
+description: Read any Altium design without opening Altium — boards, sheets, components, pins, nets, board-to-board links — by pointing a tool at a .PrjMbd or .PrjPcb once and then querying it. Use for any hardware question about a PCB project on this machine: what a part is, what a pin connects to, where a signal goes, what is on a sheet, which supply feeds what, which board something lives on, what the whole circuit looks like. Also reads the PCB layout (.PcbDoc): placement, pads, track width/length per layer, vias, pours, stack-up, schematic-vs-layout sync, and renders annotated layout PNGs. Triggers on Altium, schematic, PCB, layout, PcbDoc, PrjMbd, PrjPcb, SchDoc, netlist, designator (IC20, U1_U_PHASE, Q1), a net name, "what's connected to", "trace this signal", "which board", "show me the circuit", and on a project name you have registered.
 ---
 
 # altium-view-sch
@@ -47,7 +47,9 @@ unless you pass `--project <slug>`.
 | Where is anything (part, net, MPN)? | `altium_view.py find ISO1042` |
 | **Where does this pin's signal go?** | `altium_view.py trace U_PHASE.6` |
 | **Every connection in the design** | `altium_view.py netlist` |
+| **Every part's value, package and MPN** (one line per sheet) | `altium_view.py netlist [Board] --collapse --parts` |
 | What should a human look at? | `altium_view.py issues` |
+| Do two boards' connectors really mate pin to signal? | `altium_view.py pcb mate [C_10]` |
 | Where are the drawings? | `altium_view.py drawings` |
 
 `trace` walks the net and hops every board-to-board connector it reaches, so
@@ -58,8 +60,29 @@ whole rather than one part. It prints every net as `NET: PART.pins ...` and
 costs about 6,400 tokens for this whole three-board design -- less than a
 handful of `part` queries, and lossless. `--collapse` writes a repeated channel
 once as `<CH>` with the instances listed (about 4,700 tokens here) and only
-when the channels are genuinely identical. Never read `system_model.json`
-instead: the same connectivity costs about 14,000 tokens there, and the whole file about 66,000.
+when the channels are genuinely identical. `--parts` appends every component's
+value, package (passives) and MPN, grouped per sheet and collapsed across
+channels -- the values a circuit review needs. Never read `system_model.json`
+instead, not even with a script: the same connectivity costs about 14,000
+tokens there, the whole file about 66,000, and everything it holds is reachable
+through a command.
+
+## Reviewing a whole design: do this, in this order
+
+1. `altium_view.py issues` -- open pins (with No-ERC state), MbsDoc sync (each
+   one already checked by pad position, see `pcb mate`), and
+   **value_mpn_mismatch**: parts whose schematic value and purchasing MPN name
+   different parts (e.g. a 12 V module whose MPN is the 5 V one). Treat every
+   mismatch as a finding until the designer says which side is right.
+2. `altium_view.py netlist --collapse --parts` -- the whole circuit with values,
+   one read. Review per sheet from this, not from repeated `part` calls.
+3. `altium_view.py pcb mate` -- every board-to-board connector paired by the
+   physical position of its pins on both layouts (pin numbers are not trusted:
+   SMD vs THT headers and row- vs column-wise numbering differ while mating
+   correctly). A `!! SIGNAL MISMATCH` here is a real wiring error.
+4. `altium_view.py pcb check` -- schematic vs layout, if layout questions follow.
+5. Device behaviour (thresholds, pin functions, ratings) still needs the
+   datasheet: fetch it and cite it; the model only knows the symbol.
 
 A designator is unique **within a board**, not across the design. Every command
 answers for each board the name exists on and says so. To mean one board, write
@@ -70,14 +93,62 @@ rewritten: `C1` is what Altium, the BOM and the silkscreen call it.
 **Never answer a hardware question from memory of an earlier turn.** Run a
 query — it re-validates itself against the design files before answering.
 
+## The PCB layout, too
+
+The same tool reads each board's `.PcbDoc` (found from its `.PrjPcb`), parses
+it in well under a second, and caches the parse until the file changes. Use it
+instead of the Altium MCP for anything read-only about the layout.
+
+| Question | Command |
+|---|---|
+| Boards, size, layer count, in sync with the schematic? | `altium_view.py pcb summary` |
+| Pad-by-pad schematic vs layout (ECO pending, parts parked off-board, swapped nets) | `altium_view.py pcb check [Board]` |
+| Stack-up (copper weight, dielectric thickness, er) | `altium_view.py pcb stack Driver` |
+| Where is a part, its pads and their nets, what is next to it | `altium_view.py pcb part Power/Q1_U_PHASE` |
+| A net's copper: length and widths per layer, vias, pour area, pads | `altium_view.py pcb net Driver/G_HS_U_PHASE` |
+| Parts within N mm (edge to edge, with side) | `altium_view.py pcb near Power/Q1_U_PHASE 5` |
+| Distance between parts or pads (`DES.PAD`) | `altium_view.py pcb dist Power/D3_U_PHASE Power/Q1_U_PHASE.1` |
+| Every cap/resistor across two of an IC's nets: copper path length + vias from each pad to the IC pin, verdict | `altium_view.py pcb caps Driver/U1_U_PHASE` |
+| Length along the actual copper between two pads on one net | `altium_view.py pcb path Driver/C4_U_PHASE.1 Driver/U1_U_PHASE.16` |
+| Same-layer copper gaps between different nets (spacing / creepage review) | `altium_view.py pcb clearance Power --max 3 --rows 200` |
+| Board-to-board connectors paired by pin position on both layouts | `altium_view.py pcb mate [C_10]` |
+| **Look at the layout, with marks** | `altium_view.py pcb render Driver --around U1_U_PHASE:20 --layers L4 --nets G_HS_U_PHASE,S_HS_U_PHASE --parts U1_U_PHASE --measure A B --mark x,y,text --labels [--bottom] -o out.png` |
+
+`render` writes a PNG (default under the project cache, `pcb/`) -- open it with
+the Read tool to actually look. Highlighted nets get bright colours and
+everything else is dimmed; `--layers` takes `L1..Ln`, `top`, `bottom` or the
+layer's own name; render one copper layer at a time when nets overlap. `--bottom`
+mirrors to a view from below.
+
+Layers are reported as `L1..Ln` from the top of the physical stack, with
+Altium's own layer name beside it. Coordinates are mm in Altium's absolute
+frame. A PCB designator follows the schematic model (`D3_U_PHASE`), built from
+the component's source designator and its channel room.
+
+`pcb net` also checks real copper connectivity: per layer it merges every
+piece of the net's copper (pours with cut-outs removed, tracks, arcs, pads,
+vias) on a 0.05 mm grid, so separately drawn pours that overlap or touch count
+as one island; vias and through-hole pads join layers. It then says whether
+every pad of the net is joined, and if not, which pads sit on which piece.
+
+Caveats: saved files only; pours are read as last repoured in Altium (an
+un-repoured polygon shows its old copper); gaps under ~0.1 mm can read as
+joined; a pour's net comes from its polygon definition.
+
 ## Read the `!!` lines before the answer
 
 Every command prints its caveats on **stdout, above the answer**, each starting
 `!!`. They are part of the answer, not decoration:
 
-- `UNVERIFIED: <board> ...` -- no Altium-exported netlist, or the export
-  predates the schematic. The connectivity is derived by this tool and nothing
-  independent has confirmed it. Say so when you use it.
+- `CHECKED against the PcbDoc pad nets ...` -- the exported netlist is stale or
+  missing, but every pad net in the saved PcbDoc (Altium's own compile, pushed
+  by the last ECO) agrees with the offline netlist. Connectivity of placed parts
+  is confirmed; say "checked against the layout" rather than "verified by Altium".
+- `PCB DIFFERS from the schematic on <board>` -- the layout and schematic
+  disagree (ECO pending, or a real difference): run `pcb check <board>`.
+- `UNVERIFIED: <board> ...` -- no exported netlist and no layout that agrees.
+  The connectivity is derived by this tool and nothing independent has
+  confirmed it. Say so when you use it.
 - `DISAGREES with Altium's own netlist` -- stop and run `validate`.
 - `STALE: the model does not match the design files` -- a rebuild was needed
   and failed. The answer describes an older schematic.

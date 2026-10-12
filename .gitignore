@@ -1,3 +1,10 @@
 __pycache__/
 *.pyc
 .rebuild.lock
+
+# project-specific analyses and generated output (kept out of the tool repo)
+canlog/
+dcir/
+fh/
+spice/
+netlist_now*.txt

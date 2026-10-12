@@ -164,6 +164,7 @@ class Pin:
     length: float
     conglomerate: int
     electrical: int
+    display_mode: int = 0
 
     @property
     def end(self) -> tuple[int, int]:
@@ -183,6 +184,7 @@ class Component:
     part_id: int
     part_count: int
     unique_id: str
+    display_mode: int = 0
     designator: str = ""
     comment: str = ""
     footprint: str = ""
@@ -259,6 +261,7 @@ def parse_sheet(path: str | Path) -> Sheet:
                 part_id=int(kv.get("CurrentPartId", 1) or 1),
                 part_count=int(kv.get("PartCount", 1) or 1),
                 unique_id=kv.get("UniqueID", ""),
+                display_mode=int(kv.get("DisplayMode", 0) or 0),
             )
             sheet.components.append(c)
             by_index[idx] = c
@@ -276,6 +279,7 @@ def parse_sheet(path: str | Path) -> Sheet:
                     length=float(kv.get("PinLength", 0) or 0),
                     conglomerate=int(kv.get("PinConglomerate", 0) or 0),
                     electrical=int(kv.get("Electrical", 0) or 0),
+                    display_mode=int(kv.get("OwnerPartDisplayMode", 0) or 0),
                 ))
 
         elif kind == "designator":
@@ -387,10 +391,15 @@ def parse_sheet(path: str | Path) -> Sheet:
                       "ellipse", "polygon", "bezier", "label", "round_rect"):
             sheet.graphics.append({"kind": kind, "owner": int(kv.get("OwnerIndex", -1) or -1),
                                    "part_id": int(kv.get("OwnerPartId", -1) or -1),
+                                   "display_mode": int(kv.get("OwnerPartDisplayMode", 0) or 0),
                                    "raw": kv})
 
-    # keep only the pins of the part actually placed
+    # keep only the pins of the part actually placed, drawn in the display
+    # mode actually selected -- a library symbol can carry alternate graphical
+    # modes (IEC/ANSI, ...), each with its own full set of pins at different
+    # positions, and keeping them all shorts unrelated nets together
     for c in sheet.components:
+        c.pins = [p for p in c.pins if p.display_mode == c.display_mode] or c.pins
         if c.part_count > 1:
             c.pins = [p for p in c.pins if p.part_id in (c.part_id, -1)] or c.pins
 

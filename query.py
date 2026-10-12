@@ -96,6 +96,25 @@ def verification_caveats(model: dict) -> list[str]:
         elif cc.get("only_in_netlist") or cc.get("only_in_model"):
             differs.append(b["title"])
     out = []
+    # Without a current exported netlist, the PcbDoc is the next independent
+    # source: its pad nets are Altium's own compile of the schematic, written by
+    # the last ECO. If every pad agrees with the offline netlist, connectivity is
+    # confirmed for everything placed on the board; any difference is reported.
+    if stale or no_ref:
+        try:
+            import pcb_query
+            xc = pcb_query.pcb_cross_check(model)
+        except Exception as exc:                       # noqa: BLE001
+            xc = {}
+            out.append(f"(PcbDoc cross-check unavailable: {exc})")
+        ok = [t for t in stale + no_ref if xc.get(t, (False,))[0]]
+        if ok:
+            out.append("CHECKED against the PcbDoc pad nets (Altium's compiled netlist as of the last ECO): "
+                       + "; ".join(f"{t} ({xc[t][1]})" for t in ok))
+        for t in [t for t in stale + no_ref if t in xc and not xc[t][0]]:
+            out.append(f"PCB DIFFERS from the schematic on {t}: {xc[t][1]} -- run: altium_view.py pcb check {t.split()[0]}")
+        stale = [t for t in stale if t not in ok]
+        no_ref = [t for t in no_ref if t not in ok]
     if differs:
         out.append(f"DISAGREES with Altium's own netlist on: {', '.join(differs)}. "
                    f"Run: altium_view.py validate")
@@ -196,10 +215,59 @@ def cmd_summary(m: dict, _args) -> None:
 
 
 def cmd_issues(m: dict, _args) -> None:
+    mate = None
     for b in m["boards"]:
         for i in b["issues"]:
-            print(f"[{i['severity']}] {b['title']} / {i['kind']}: {i['where']}")
+            sev = i["severity"]
+            note = ""
+            if i["kind"] == "multiboard_out_of_sync":
+                # pin numbers can differ while the pins still mate correctly
+                # (SMD vs THT header, row- vs column-wise numbering); the layouts
+                # say what actually touches what
+                try:
+                    import pcb_query
+                    if mate is None:
+                        mate = pcb_query.Boards()
+                    des = i["where"].split()[0]
+                    lk = next(l for l in m["interboard_links"] if l["designator"] == des)
+                    r = pcb_query.mate_report(mate, lk)
+                    if r and r["all_same"] and r["worst_resid"] < 0.5:
+                        sev = "info"
+                        note = (f"    PHYSICALLY OK: by pad position on both PcbDocs every pin meets the same "
+                                f"signal (pcb mate {des}); only the .MbsDoc record is out of date.")
+                    elif r:
+                        note = f"    !! by pad position the pins do NOT all meet the same signal -- run: altium_view.py pcb mate {des}"
+                except Exception as exc:               # noqa: BLE001
+                    note = f"    (physical check unavailable: {exc})"
+            print(f"[{sev}] {b['title']} / {i['kind']}: {i['where']}")
             print(f"    {i['detail']}")
+            if note:
+                print(note)
+        # The comment is what the schematic and silkscreen say; the MPN is what
+        # gets bought. When they name different parts, one of them is wrong.
+        def norm(s: str) -> str:
+            return re.sub(r"[^A-Z0-9]", "", str(s).upper())
+        bad = []
+        for des, c in sorted(b["components"].items()):
+            com, mpn = c.get("comment"), c.get("mpn")
+            if not com or not mpn:
+                continue
+            if c.get("kind") == "passive" and not re.search(r"[A-Za-z]{3}", str(com)):
+                # a passive's value ('10uF') is not a part number; only compare when
+                # the value carries one (a fuse '154001 (1A)', a ferrite '742792063')
+                runs = re.findall(r"\d{5,}", str(com))
+                if runs and not any(r_ in norm(mpn) for r_ in runs):
+                    bad.append(f"{des}: comment '{com}' vs MPN '{mpn}'")
+                continue
+            a_, m_ = norm(com), norm(mpn)
+            if len(a_) < 5 or len(m_) < 5 or a_ in m_ or m_ in a_:
+                continue
+            # same family with a different grade/voltage/value is the dangerous case
+            bad.append(f"{des}: comment '{com}' vs MPN '{mpn}'")
+        if bad:
+            print(f"[warning] {b['title']} / value_mpn_mismatch: {len(bad)} part(s)")
+            print("    the schematic value and the purchasing part number name different parts -- "
+                  "one of them is wrong: " + "; ".join(bad))
 
 
 def cmd_part(m: dict, args) -> None:
@@ -329,12 +397,20 @@ def cmd_link(m: dict, args) -> None:
         if want not in lk["designator"].upper() and \
            want not in (lk["a_connector"] + lk["b_connector"]).upper():
             continue
+        if lk.get("mbs_stale"):
+            print(f"!! OUT OF SYNC: {lk['designator']} -- these pins changed on a board "
+                  f"since the .MbsDoc was last updated; nets below are the schematics' "
+                  f"own, the MbsDoc's are in brackets. Check both ends still match.")
         print(f"{lk['designator']}   {lk['a_board']} {lk['a_connector']} <-> "
               f"{lk['b_board']} {lk['b_connector']}   {lk['wire_count']} wires")
         print(f"   {short(lk['a_block'] or '')} <-> {short(lk['b_block'] or '')}")
         for w in lk["wires"]:
-            print(f"     pin {str(w['pin']):<4} {str(w['a_pin']):<4} {str(w['a_net'] or ''):<24}"
-                  f" <-> {str(w['b_pin']):<4} {w['b_net'] or ''}")
+            def tag(side):
+                was = w.get(f"{side}_net_mbs")
+                return f" [{was}]" if was is not None and was != w[f"{side}_net"] else ""
+            print(f"     pin {str(w['pin']):<4} {str(w['a_pin']):<4} "
+                  f"{(str(w['a_net'] or '') + tag('a')):<40}"
+                  f" <-> {str(w['b_pin']):<4} {w['b_net'] or ''}{tag('b')}")
         return
     print(f"no link matching {want!r}")
 
@@ -507,11 +583,38 @@ def cmd_netlist(m: dict, args) -> None:
                 tag += f"  [x{len(members)}: {', '.join(chans)}]"
             print(f"{generic}: {body}{tag}")
         if with_parts:
+            # values are half of a circuit review: a netlist without them says
+            # what connects to what but not whether 10 k should have been 1 k
             print("")
-            print(f"## {b['title']} parts")
-            for des, c in sorted(b["components"].items()):
-                print(f"{des} {c['comment'] or ''}"
-                      + (f" [{c['mpn']}]" if c.get("mpn") else ""))
+            print(f"## {b['title']} parts  (value [package] {{MPN}}; one line per sheet)")
+            def label(c: dict) -> str:
+                s = str(c.get("comment") or "")
+                if c.get("kind") == "passive" and c.get("footprint"):
+                    s += f"[{c['footprint']}]"
+                if c.get("mpn") and c["mpn"] != c.get("comment"):
+                    s += f"{{{c['mpn']}}}"
+                return s
+            def dkey(d: str):
+                mm = re.match(r"([A-Za-z_]+?)(\d+)", d)
+                return (mm.group(1), int(mm.group(2)), d) if mm else (d, 0, d)
+            sheets = b.get("sheet_index") or []
+            by_sheet: dict = defaultdict(dict)
+            for des, c in b["components"].items():
+                s = c.get("sheet")
+                sn = sheets[s] if isinstance(s, int) and s < len(sheets) else s
+                sn = sn.get("name", sn) if isinstance(sn, dict) else sn
+                key = CHANNEL.sub("_<CH>", des) if collapse else des
+                by_sheet[short(str(sn))].setdefault(key, []).append((des, label(c)))
+            for sn in sorted(by_sheet):
+                items = []
+                for key, members in sorted(by_sheet[sn].items(), key=lambda kv: dkey(kv[0])):
+                    labels = {lab for _, lab in members}
+                    if len(labels) == 1:
+                        tag = f" x{len(members)}" if len(members) > 1 else ""
+                        items.append(f"{key}={members[0][1]}{tag}")
+                    else:                      # a stuffing difference between channels must stay visible
+                        items += [f"{d}={lab}" for d, lab in sorted(members)]
+                print(f"[{sn}] " + "; ".join(items))
 
     if m.get("interboard_links"):
         print("")

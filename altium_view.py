@@ -21,11 +21,23 @@ components, pins and nets -- and re-derived whenever those files change.
   altium_view.py find ISO1042                  search parts, nets, part numbers
   altium_view.py trace U_PHASE.6               follow a signal, across boards
   altium_view.py netlist [--collapse]          every connection, compact
+  altium_view.py netlist --collapse --parts    ... plus every value / package / MPN
   altium_view.py issues                        what a human should look at
+                                               (incl. value vs MPN mismatches)
   altium_view.py freshness                     cache state vs the design files
   altium_view.py drawings                      where the HTML views are
   altium_view.py rebuild                       force a rebuild now
   altium_view.py validate                      diff against Altium's own netlist
+
+  altium_view.py pcb summary                   the layouts: size, stack, sync state
+  altium_view.py pcb check                     schematic vs layout, pad by pad
+  altium_view.py pcb part Power/Q1_U_PHASE     placement, pads, nets, neighbours
+  altium_view.py pcb net Driver/G_HS_U_PHASE   copper per layer: length, width, vias
+  altium_view.py pcb near / dist / stack       distances and the stack-up
+  altium_view.py pcb mate [C_10]               board-to-board pins paired by position
+  altium_view.py pcb clearance Power --max 3   same-layer gaps between nets
+  altium_view.py pcb render Driver --around U1_U_PHASE:15 --nets A,B --parts X
+                                               a PNG of the layout with marks on
 
 Every command takes `--project <slug or path>`; without it, the last project
 used. Queries re-check the design files first and rebuild if they moved.
@@ -176,6 +188,8 @@ def main(argv: list[str]) -> int:
         return run("validate_offline.py", args)
     if cmd in QUERY_COMMANDS:
         return run("query.py", [cmd, *args])
+    if cmd == "pcb":
+        return run("pcb_query.py", args)
 
     print(f"unknown command {cmd!r}\n")
     print(__doc__)
