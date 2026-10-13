@@ -38,7 +38,7 @@ import project
 import query
 from project import P
 
-PCB_CACHE_VERSION = 6
+PCB_CACHE_VERSION = 7
 
 
 # --------------------------------------------------------------------------
@@ -219,7 +219,26 @@ def net_copper(pcb: dict, net: str, res: float = 0.05, window=None, keep: bool =
     pads = [p for p in pcb["pads"] if p["net"] == net and (p["layer"] in order or p["layer"] == 74)]
     vias = [v for v in pcb["vias"] if v["net"] == net]
 
+    # Internal planes are negative: copper everywhere inside the split-plane
+    # outline (or the board outline), minus the void lines drawn on the layer
+    # and the anti-pads around other nets' vias and through-hole pads.
+    plane_nets = {int(k): v for k, v in (pcb.get("plane_nets") or {}).items()}
+    planes = []                                         # (layer, outline points)
+    for l in layers:
+        if not (39 <= l <= 54):
+            continue
+        splits = [pg["points"] for pg in pcb["polygons"]
+                  if pg["layer"] == l and pg["net"] == net and len(pg["points"]) >= 3
+                  and "split" in (pg.get("type") or "").lower()]
+        if splits:
+            planes += [(l, pts) for pts in splits]
+        elif plane_nets.get(l) == net and len(pcb.get("outline") or []) >= 3:
+            planes.append((l, pcb["outline"]))
+
     xs, ys = [], []
+    for _, pts in planes:
+        xs += [p[0] for p in pts]
+        ys += [p[1] for p in pts]
     for r in regs:
         xs += [p[0] for p in r["points"]]
         ys += [p[1] for p in r["points"]]
@@ -267,6 +286,33 @@ def net_copper(pcb: dict, net: str, res: float = 0.05, window=None, keep: bool =
             if len(h) >= 3:
                 d.polygon([(px(x, y)[0] - bx0, px(x, y)[1] - by0) for x, y in h], fill=0)
         grids[r["layer"]][by0:by1 + 1, bx0:bx1 + 1] |= np.array(img, dtype=bool)
+
+    PLANE_CLEARANCE = 0.25                              # anti-pad margin, mm (Altium default ~0.5 dia)
+    for l in sorted({l for l, _ in planes}):
+        img = Image.new("1", (W, H), 0)
+        d = ImageDraw.Draw(img)
+        for pl, pts in planes:
+            if pl == l:
+                d.polygon([px(x, y) for x, y in pts], fill=1)
+        for t in pcb["tracks"]:
+            if t["layer"] == l and t["net"] != net:
+                wpx = max(1, int(round(t["width"] / res)))
+                d.line([px(t["x1"], t["y1"]), px(t["x2"], t["y2"])], fill=0, width=wpx)
+        for a in pcb["arcs"]:
+            if a["layer"] == l and a["net"] != net:
+                sweep = (a["end"] - a["start"]) % 360 or 360
+                n = max(4, int(sweep / 5))
+                d.line([px(a["cx"] + a["r"] * math.cos(math.radians(a["start"] + sweep * k / n)),
+                           a["cy"] + a["r"] * math.sin(math.radians(a["start"] + sweep * k / n)))
+                        for k in range(n + 1)], fill=0, width=max(1, int(round(a["width"] / res))))
+        holes = [(v["x"], v["y"], v["diameter"]) for v in pcb["vias"] if v["net"] != net]
+        holes += [(q["x"], q["y"], max(q["sx"], q["sy"])) for q in pcb["pads"]
+                  if q["layer"] == 74 and q["net"] != net and q["hole"] > 0.01]
+        for x, y, dia in holes:
+            cx, cy = px(x, y)
+            rr = (dia / 2 + PLANE_CLEARANCE) / res
+            d.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], fill=0)
+        grids[l] |= np.array(img, dtype=bool)
 
     imgs, draws = {}, {}
 

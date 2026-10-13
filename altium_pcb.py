@@ -154,6 +154,8 @@ def parse_stack(board: dict) -> list[dict]:
         kind_byte, legacy = (lid >> 16) & 0xFF, lid & 0xFFFF
         if kind_byte == 0x00 and legacy == 0xFFFF:      # bottom copper
             legacy = 32
+        elif kind_byte == 0x01:                         # internal plane N -> legacy 38+N
+            legacy = 38 + legacy
         name = board[pre + "NAME"]
         rec = {"name": name}
         if kind_byte == 0x00 or kind_byte == 0x01:      # copper / plane
@@ -489,6 +491,10 @@ def read_pcb(path: str | Path) -> dict:
         "units": "mm",
         "layer_names": {str(k): v for k, v in LAYER_NAMES.items()},
         "layer_alias": {str(k): v for k, v in layer_alias.items()},
+        # net of each internal (negative) plane, by legacy layer id 39..54
+        "plane_nets": {str(38 + i): (board.get(f"PLANE{i}NETNAME") or "").strip()
+                       for i in range(1, 17)
+                       if (board.get(f"PLANE{i}NETNAME") or "").strip() not in ("", "(No Net)")},
         "stack": stack,
         "outline": outline,
         "extent": [min(xs), min(ys), max(xs), max(ys)],

@@ -263,8 +263,11 @@ def parse_netlist(path: Path, known: set[str]) -> dict[str, list[str]]:
         if not line:
             continue
         if line.startswith("*SIGNAL*"):
-            cur = line.split(None, 1)[1].strip()
-            nets[cur] = []
+            # A net label with blank text yields "*SIGNAL* " -- keep the net
+            # under a visible placeholder rather than crashing on it.
+            parts = line.split(None, 1)
+            cur = parts[1].strip() if len(parts) > 1 and parts[1].strip() else "<UNNAMED>"
+            nets.setdefault(cur, [])
             continue
         if line.startswith("*"):
             cur = None
