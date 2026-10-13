@@ -10,6 +10,9 @@ Ask questions of the PCB layout, offline, and draw it with marks on.
   altium_view.py pcb near Power/Q1_U_PHASE 10    what lies within 10 mm
   altium_view.py pcb dist Power/D3_U_PHASE Power/Q1_U_PHASE.1
   altium_view.py pcb mate [C_10]                 board-to-board connectors, pins paired by position
+  altium_view.py pcb length IC1.112 R50.2        pad-to-pad routed length along the copper (+ via barrels)
+  altium_view.py pcb xsignals IC1 U1 --ref FMC_SDCLK --tol 10 --group data=FMC_D*,FMC_NBL*
+                                                 every signal SRC->DST, through series parts, length-matched
   altium_view.py pcb clearance Power --max 3     same-layer copper gaps between different nets
   altium_view.py pcb render Driver --around U1_U_PHASE:20 --nets G_HS_U_PHASE,S_HS_U_PHASE
                 [--layers L3,L4] [--parts A,B] [--mark x,y,text] [--measure A B]
@@ -1467,10 +1470,103 @@ def pcb_cross_check(model: dict) -> dict:
     return out
 
 
+def cmd_length(B: Boards, args) -> None:
+    """Pad-to-pad routed length on one net, along the copper (pcb_length)."""
+    import pcb_length
+    if len(args) < 2:
+        sys.exit("pcb length needs two pads on one net: pcb length IC1.112 R50.2")
+    for b, pcb, ra in B.resolve(args[0]):
+        rb = args[1].split("/", 1)[-1]
+        pa, pb = find_pad(pcb, ra), find_pad(pcb, rb)
+        if not (pa and pb):
+            continue
+        if pa["net"] != pb["net"]:
+            print(f"{b['title']}: {ra} is on {pa['net']}, {rb} on {pb['net']} -- not one net "
+                  f"(through a series part use: pcb xsignals SRC DST)")
+            continue
+        r = pcb_length.connection(pcb, pa, pb, pad_corners, copper_layers(pcb))
+        raw = sum(track_len(t) for t in pcb["tracks"] if t["net"] == pa["net"] and altium_pcb.is_copper(t["layer"]))
+        raw += sum(arc_len(a) for a in pcb["arcs"] if a["net"] == pa["net"] and altium_pcb.is_copper(a["layer"]))
+        print(f"{b['title']}: {ra} -> {rb}  ({pa['net']})")
+        if not r:
+            print("   NOT joined by tracks/vias (a pour may join them; this measure follows tracks only)")
+            continue
+        lay = ", ".join(short_lname(pcb, l) for l in r["layers"])
+        print(f"   routed {r['planar']:.2f} mm planar, {r['total']:.2f} mm with via barrels "
+              f"(+{r['z']:.2f}), {r['vias']} via(s), layers {lay}")
+        print(f"   (sum of every track on the net: {raw:.2f} mm)")
+
+
+def cmd_xsignals(B: Boards, args) -> None:
+    """
+    Every signal from part SRC to part DST, direct or through one series part,
+    with routed length, and the length-matching check if asked:
+      pcb xsignals IC1 U1 --ref FMC_SDCLK --tol 10 --group data=FMC_D*,FMC_NBL*
+    """
+    import pcb_length
+    if len(args) < 2:
+        sys.exit("pcb xsignals needs two parts: pcb xsignals IC1 U1 [--ref NET] [--tol MM] "
+                 "[--group NAME=PAT,PAT ...] [--z]")
+    src, dst, rest = args[0], args[1], args[2:]
+    ref, tol, use_z, groups = None, None, False, []
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a == "--ref" and i + 1 < len(rest):
+            ref = rest[i + 1]; i += 2
+        elif a == "--tol" and i + 1 < len(rest):
+            tol = float(rest[i + 1]); i += 2
+        elif a == "--group" and i + 1 < len(rest):
+            nm, _, pats = rest[i + 1].partition("=")
+            groups.append((nm, pats.split(","))); i += 2
+        elif a == "--z":
+            use_z = True; i += 1
+        else:
+            i += 1
+    key = "total" if use_z else "planar"
+    for b, pcb, s in B.resolve(src):
+        d = dst.split("/", 1)[-1]
+        rows = pcb_length.xsignals(pcb, s, d, pad_corners, copper_layers(pcb))
+        if not rows:
+            print(f"{b['title']}: no connection from {s} to {d}")
+            continue
+        refrow = next((r for r in rows if ref and ref in r["nets"]), None)
+        print(f"{b['title']}: {s} -> {d}, {len(rows)} signal(s); length = "
+              f"{'planar + via barrels' if use_z else 'planar (tracks + arcs)'}, mm")
+        if ref and not refrow:
+            print(f"   !! reference {ref} not found among these signals")
+        print(f"   {'signal':<14}{'src':>8} {'dst':>8} {'series':>7} {'length':>8} {'vias':>5}"
+              + (f" {'vs ' + ref:>12}" if refrow else ""))
+        for r in sorted(rows, key=lambda r: r["name"]):
+            if not r["ok"]:
+                print(f"   {r['name']:<14}{r['src']['name']:>8} {r['dst']['name']:>8} "
+                      f"{r['via_part'] or '-':>7}  NOT fully routed")
+                continue
+            dv = f" {r[key] - refrow[key]:>+12.1f}" if refrow else ""
+            print(f"   {r['name']:<14}{r['src']['name']:>8} {r['dst']['name']:>8} "
+                  f"{r['via_part'] or '-':>7} {r[key]:>8.1f} {r['vias']:>5}{dv}")
+        for nm, pats in groups:
+            g = [r for r in rows if r["ok"] and pcb_length.glob_match(r["name"], pats)]
+            if not g:
+                continue
+            lo, hi = min(g, key=lambda r: r[key]), max(g, key=lambda r: r[key])
+            line = (f"   group {nm}: {len(g)} signal(s), {lo[key]:.1f}..{hi[key]:.1f}, "
+                    f"spread {hi[key] - lo[key]:.1f}")
+            if tol is not None:
+                line += "  OK" if hi[key] - lo[key] <= tol else f"  !! over {tol:g}"
+            print(line)
+        if refrow and tol is not None:
+            bad = [r for r in rows if r["ok"] and r is not refrow and abs(r[key] - refrow[key]) > tol]
+            print(f"   vs {ref} within +-{tol:g}: "
+                  + ("all OK" if not bad else
+                     "!! " + ", ".join(f"{r['name']} {r[key] - refrow[key]:+.1f}" for r in bad)))
+
+
 COMMANDS = {"summary": cmd_summary, "check": cmd_check, "stack": cmd_stack,
             "part": cmd_part, "net": cmd_net, "near": cmd_near, "dist": cmd_dist,
             "render": cmd_render, "path": cmd_path, "caps": cmd_caps,
-            "routed": cmd_routed, "clearance": cmd_clearance, "mate": cmd_mate}
+            "routed": cmd_routed, "clearance": cmd_clearance, "mate": cmd_mate,
+            "length": cmd_length, "xsignals": cmd_xsignals}
 
 
 def main(argv: list[str]) -> int:
