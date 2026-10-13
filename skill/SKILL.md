@@ -178,6 +178,15 @@ to be left open", and the tool reads those crosses. `part` marks such pins
 So never call a pin "unconnected -- possible error" without checking whether it
 carries a cross.
 
+## Compile masks are honoured
+
+Anything lying wholly inside a compile mask (the grey box with a triangle in
+Altium) is left out exactly as Altium compiles it: not in the netlist, the PCB
+comparison or the parts list. `issues` lists such parts as `compile_masked`, so
+an alternative part parked under a mask is never reported as a duplicate
+designator or a miswired connector. Check that list before calling a masked
+part's absence an error.
+
 ## Freshness is automatic; know the one hole
 
 The model is a **cache of the Altium files, not a second source of truth**.

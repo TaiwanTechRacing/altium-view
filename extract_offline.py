@@ -120,6 +120,10 @@ def board_components(board_key: str) -> tuple[dict, list[dict]]:
         "requested": len(out),
         "not_found": [],
         "_source": "offline (altium_sch + netlist_offline)",
+        # parts inside a compile mask: left out of the design, kept on record
+        "masked": [{"designator": c.designator, "lib_ref": c.lib_ref,
+                    "comment": resolve_special(c.comment, c.parameters), "sheet": sn}
+                   for sn, sh in sheets.items() for c in sh.masked_components],
     }
     return payload, result["orphans"]
 

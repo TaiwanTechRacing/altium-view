@@ -231,6 +231,10 @@ class Sheet:
     sheet_symbols: list[SheetSymbol] = field(default_factory=list)
     graphics: list[dict] = field(default_factory=list)
     no_erc: list[dict] = field(default_factory=list)
+    # Compile masks (RECORD 211): whatever lies wholly inside one is left out
+    # of compilation by Altium -- not in the netlist, the PCB or the BOM.
+    compile_masks: list[tuple[float, float, float, float]] = field(default_factory=list)
+    masked_components: list[Component] = field(default_factory=list)
 
     @property
     def has_children(self) -> bool:
@@ -387,6 +391,11 @@ def parse_sheet(path: str | Path) -> Sheet:
                     "io_type": int(kv.get("IOType", 0) or 0),
                 })
 
+        elif rid == 211:                                  # compile mask
+            x0, y0 = coord(kv, "Location.X"), coord(kv, "Location.Y")
+            x1, y1 = coord(kv, "Corner.X"), coord(kv, "Corner.Y")
+            sheet.compile_masks.append((min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)))
+
         elif kind in ("polyline", "line", "rectangle", "arc", "elliptical_arc",
                       "ellipse", "polygon", "bezier", "label", "round_rect"):
             sheet.graphics.append({"kind": kind, "owner": int(kv.get("OwnerIndex", -1) or -1),
@@ -403,7 +412,29 @@ def parse_sheet(path: str | Path) -> Sheet:
         if c.part_count > 1:
             c.pins = [p for p in c.pins if p.part_id in (c.part_id, -1)] or c.pins
 
+    if sheet.compile_masks:
+        apply_compile_masks(sheet)
     return sheet
+
+
+def apply_compile_masks(sheet: Sheet) -> None:
+    """Drop every object lying wholly inside a compile mask, as Altium does."""
+    def inside(x, y):
+        return any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in sheet.compile_masks)
+
+    def all_inside(pts):
+        return bool(pts) and all(inside(x, y) for x, y in pts)
+
+    keep = []
+    for c in sheet.components:
+        pts = [(c.x, c.y)] + [p.end for p in c.pins] + [(p.x, p.y) for p in c.pins]
+        (sheet.masked_components if all_inside(pts) else keep).append(c)
+    sheet.components = keep
+    sheet.wires = [w for w in sheet.wires if not all_inside(w)]
+    sheet.junctions = [j for j in sheet.junctions if not inside(*j)]
+    for name in ("net_labels", "no_erc", "powers", "ports"):
+        setattr(sheet, name, [o for o in getattr(sheet, name)
+                              if not inside(o.get("x", 0), o.get("y", 0))])
 
 
 def parse_project(sch_paths) -> dict[str, Sheet]:

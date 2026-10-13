@@ -524,6 +524,17 @@ def build_board(key: str, title: str) -> dict:
 
     # --- issues worth a human's eye --------------------------------------
     issues = []
+    masked = data.get("masked") or []
+    if masked:
+        issues.append({
+            "severity": "info",
+            "kind": "compile_masked",
+            "where": f"{len(masked)} part(s)",
+            "detail": "inside a compile mask, so excluded from the design (netlist, "
+                      "PCB, BOM) exactly as Altium compiles it: "
+                      + ", ".join(f"{m['designator']} {m['comment'] or m['lib_ref']} ({m['sheet']})"
+                                  for m in masked),
+        })
     for des, n in sorted(duplicates.items()):
         issues.append({
             "severity": "error",
