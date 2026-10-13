@@ -277,8 +277,14 @@ def parse_netlist(path: Path, known: set[str]) -> dict[str, list[str]]:
         node_des: str | None = None
         node_pin: list[str] = []
         for tok in line.split():
-            head = tok.split(".", 1)
-            if len(head) == 2 and head[0] in known:
+            # a designator may itself contain a dot ('3.3V' on an LED), so try
+            # every dot as the split point, longest designator first
+            head = None
+            for i in sorted((i for i, ch in enumerate(tok) if ch == "."), reverse=True):
+                if tok[:i] in known:
+                    head = (tok[:i], tok[i + 1:])
+                    break
+            if head is not None:
                 if node_des is not None:
                     nets[cur].append(norm_node(node_des, " ".join(node_pin)))
                 node_des, node_pin = head[0], [head[1]]

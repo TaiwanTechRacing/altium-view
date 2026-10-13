@@ -114,6 +114,10 @@ def sheet_nets(sheet: Sheet) -> list[dict]:
     # connect regardless of the order they appear in the file.
     terminals: list[tuple] = []          # (key, [points], kind, text)
     for i, lab in enumerate(sheet.net_labels):
+        # a label with blank text names nothing (and would otherwise merge every
+        # blank label on the sheet into one net by their shared "name")
+        if not str(lab["text"]).strip():
+            continue
         terminals.append((("l", i), [(lab["x"], lab["y"])], "net_label", lab["text"]))
     for i, pw in enumerate(sheet.powers):
         terminals.append((("g", i), [(pw["x"], pw["y"])], "power", pw["text"]))
@@ -201,6 +205,10 @@ def sheet_nets(sheet: Sheet) -> list[dict]:
                 "designator": comp.designator,
                 "pin": pin.designator,
                 "pin_name": pin.name,
+                # which part this is: two parts can share a designator (a
+                # duplicate the designer has not annotated away), and keying
+                # pins by designator alone would hand both the same nets
+                "uid": comp.unique_id,
             }
             if pin.end in nc_points:
                 node["no_erc"] = True

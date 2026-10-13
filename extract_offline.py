@@ -65,14 +65,17 @@ def board_components(board_key: str) -> tuple[dict, list[dict]]:
     result = build_board(paths, flat=cfg["flat"])
     sheets = result["sheets"]
 
-    # designator -> net, from the netlist we just built
-    node_net: dict[tuple[str, str], str] = {}
-    node_nc: set[tuple[str, str]] = set()
+    # (designator, part uid, pin) -> net, from the netlist we just built.
+    # The uid keeps two parts that share a designator apart: keyed by
+    # designator alone, the second part's pins overwrite the first's.
+    node_net: dict[tuple[str, str, str], str] = {}
+    node_nc: set[tuple[str, str, str]] = set()
     for net in result["nets"]:
         for nd in net["nodes"]:
-            node_net[(nd["designator"], nd["pin"])] = net["name"]
+            k = (nd["designator"], nd.get("uid", ""), nd["pin"])
+            node_net[k] = net["name"]
             if nd.get("no_erc"):
-                node_nc.add((nd["designator"], nd["pin"]))
+                node_nc.add(k)
 
     # which rooms each child sheet was placed into
     rooms: dict[str, list[str | None]] = {}
@@ -103,8 +106,8 @@ def board_components(board_key: str) -> tuple[dict, list[dict]]:
                     "pins": [{
                         "pin": p.designator,
                         "name": p.name,
-                        "net": node_net.get((des, p.designator)),
-                        "no_erc": (des, p.designator) in node_nc,
+                        "net": node_net.get((des, comp.unique_id, p.designator)),
+                        "no_erc": (des, comp.unique_id, p.designator) in node_nc,
                     } for p in comp.pins],
                 })
 
