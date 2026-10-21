@@ -10,6 +10,7 @@ Ask questions of the PCB layout, offline, and draw it with marks on.
   altium_view.py pcb near Power/Q1_U_PHASE 10    what lies within 10 mm
   altium_view.py pcb dist Power/D3_U_PHASE Power/Q1_U_PHASE.1
   altium_view.py pcb mate [C_10]                 board-to-board connectors, pins paired by position
+  altium_view.py pcb rules [Board] [length]      design rules, net classes, xSignals from the PcbDoc
   altium_view.py pcb length IC1.112 R50.2        pad-to-pad routed length along the copper (+ via barrels)
   altium_view.py pcb xsignals IC1 U1 --ref FMC_SDCLK --tol 10 --group data=FMC_D*,FMC_NBL*
                                                  every signal SRC->DST, through series parts, length-matched
@@ -1502,13 +1503,15 @@ def cmd_xsignals(B: Boards, args) -> None:
     Every signal from part SRC to part DST, direct or through one series part,
     with routed length, and the length-matching check if asked:
       pcb xsignals IC1 U1 --ref FMC_SDCLK --tol 10 --group data=FMC_D*,FMC_NBL*
+    --after-series measures only the leg from the series part to DST, the way
+    length matching is often set up when the resistor sits at the driver.
     """
     import pcb_length
     if len(args) < 2:
         sys.exit("pcb xsignals needs two parts: pcb xsignals IC1 U1 [--ref NET] [--tol MM] "
-                 "[--group NAME=PAT,PAT ...] [--z]")
+                 "[--group NAME=PAT,PAT ...] [--z] [--after-series]")
     src, dst, rest = args[0], args[1], args[2:]
-    ref, tol, use_z, groups = None, None, False, []
+    ref, tol, use_z, groups, after = None, None, False, [], False
     i = 0
     while i < len(rest):
         a = rest[i]
@@ -1521,9 +1524,11 @@ def cmd_xsignals(B: Boards, args) -> None:
             groups.append((nm, pats.split(","))); i += 2
         elif a == "--z":
             use_z = True; i += 1
+        elif a == "--after-series":
+            after = True; i += 1
         else:
             i += 1
-    key = "total" if use_z else "planar"
+    key = ("after_total" if use_z else "after_planar") if after else ("total" if use_z else "planar")
     for b, pcb, s in B.resolve(src):
         d = dst.split("/", 1)[-1]
         rows = pcb_length.xsignals(pcb, s, d, pad_corners, copper_layers(pcb))
@@ -1532,7 +1537,8 @@ def cmd_xsignals(B: Boards, args) -> None:
             continue
         refrow = next((r for r in rows if ref and ref in r["nets"]), None)
         print(f"{b['title']}: {s} -> {d}, {len(rows)} signal(s); length = "
-              f"{'planar + via barrels' if use_z else 'planar (tracks + arcs)'}, mm")
+              f"{'planar + via barrels' if use_z else 'planar (tracks + arcs)'}, mm"
+              + (", series part -> DST leg only" if after else ", whole path"))
         if ref and not refrow:
             print(f"   !! reference {ref} not found among these signals")
         print(f"   {'signal':<14}{'src':>8} {'dst':>8} {'series':>7} {'length':>8} {'vias':>5}"
@@ -1562,11 +1568,68 @@ def cmd_xsignals(B: Boards, args) -> None:
                      "!! " + ", ".join(f"{r['name']} {r[key] - refrow[key]:+.1f}" for r in bad)))
 
 
+def read_rules(path) -> dict:
+    """Design rules, net classes and xSignals straight from the PcbDoc."""
+    import re
+    doc = altium_pcb.Doc(path)
+    raw = doc.ole.openstream("Rules6/Data").read().decode("latin-1")
+    rules = []
+    for rec in re.split(r"[\x00-\x08]{2,}", raw):
+        f = dict(x.split("=", 1) for x in rec.split("|") if "=" in x)
+        if f.get("RULEKIND"):
+            rules.append({k: re.split(r"[\x00-\x1f]", v)[0] for k, v in f.items()})
+    kinds = {"0": "net", "1": "component", "10": "xsignal"}
+    classes = []
+    for c in doc.text_records("Classes6"):
+        members = [v for k, v in sorted(c.items()) if k.startswith("M") and k[1:].isdigit()]
+        classes.append({"name": c.get("NAME", ""), "kind": kinds.get(c.get("KIND", ""), c.get("KIND", "")),
+                        "members": members})
+    sig = doc.ole.openstream("SignalClasses/Data").read().decode("latin-1")
+    for rec in re.split(r"[\x00-\x08]{2,}", sig):
+        f = dict(x.split("=", 1) for x in rec.split("|") if "=" in x)
+        if f.get("NAME"):
+            members = [v for k, v in sorted(f.items()) if k.startswith("M") and k[1:].isdigit()]
+            classes.append({"name": re.split(r"[\x00-\x1f]", f["NAME"])[0], "kind": "xsignal", "members": members})
+    pin_pairs = doc.ole.get_size("PinPairsSection/Data") if doc.ole.exists("PinPairsSection/Data") else 0
+    return {"rules": rules, "classes": classes, "pin_pair_bytes": pin_pairs}
+
+
+def cmd_rules(B: Boards, args) -> None:
+    """
+    pcb rules [Board] [kind]   design rules (scope, key values), net classes, xSignals.
+    kind filters by rule kind, e.g. `pcb rules length` for Length/MatchedLengths.
+    """
+    want = args[-1].lower() if args and not B.pick(args[-1]) else None
+    keys = ("TOLERANCE", "MINLIMIT", "MAXLIMIT", "GAP", "MINWIDTH", "MAXWIDTH", "PREFEREDWIDTH",
+            "CHECKXSIGNALS", "CHECKOTHERS", "CHECKNETSINDIFFPAIR")
+    for b, pcb in B.items:
+        path = Path(pcb["file"])
+        info = read_rules(path)
+        print(f"{b['title']}  ({path.name})")
+        for r in info["rules"]:
+            if want and want not in r["RULEKIND"].lower():
+                continue
+            extra = " ".join(f"{k.lower()}={r[k]}" for k in keys if k in r)
+            print(f"   {r['RULEKIND']:<22} {r.get('NAME', ''):<24} {'on ' if r.get('ENABLED') == 'TRUE' else 'off'} "
+                  f"scope {r.get('SCOPE1EXPRESSION', '')}"
+                  + (f" / {r['SCOPE2EXPRESSION']}" if r.get("SCOPE2EXPRESSION", "All") != "All" else "")
+                  + (f"   {extra}" if extra else ""))
+        if not want:
+            for c in info["classes"]:
+                if c["members"] or c["kind"] == "xsignal":
+                    print(f"   class [{c['kind']}] {c['name']}: {len(c['members'])} member(s)"
+                          + (f" -- {', '.join(c['members'][:12])}{' ...' if len(c['members']) > 12 else ''}"
+                             if c["members"] else ""))
+            xs = [c for c in info["classes"] if c["kind"] == "xsignal" and c["members"]]
+            if not xs and not info["pin_pair_bytes"]:
+                print("   no xSignals defined: a net split by a series part is two separate nets to every rule")
+
+
 COMMANDS = {"summary": cmd_summary, "check": cmd_check, "stack": cmd_stack,
             "part": cmd_part, "net": cmd_net, "near": cmd_near, "dist": cmd_dist,
             "render": cmd_render, "path": cmd_path, "caps": cmd_caps,
             "routed": cmd_routed, "clearance": cmd_clearance, "mate": cmd_mate,
-            "length": cmd_length, "xsignals": cmd_xsignals}
+            "length": cmd_length, "xsignals": cmd_xsignals, "rules": cmd_rules}
 
 
 def main(argv: list[str]) -> int:

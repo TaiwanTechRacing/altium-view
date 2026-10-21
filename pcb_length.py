@@ -306,6 +306,12 @@ def xsignals(pcb, src: str, dst: str, pad_corners, copper, max_pads: int = 4):
         r["total"] = r["planar"] + r["z"]
         r["vias"] = sum(l["vias"] for l in legs if l)
         r["name"] = r["nets"][0]
+        # the leg after the series part only (MCU -> R is often left out of
+        # length matching when the resistor sits at the driver)
+        last = legs[-1]
+        r["after_planar"] = last["planar"] if last else 0.0
+        r["after_total"] = last["total"] if last else 0.0
+        r["before_planar"] = legs[0]["planar"] if len(legs) > 1 and legs[0] else 0.0
     return rows
 
 

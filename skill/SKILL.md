@@ -112,6 +112,8 @@ instead of the Altium MCP for anything read-only about the layout.
 | Length along the actual copper between two pads on one net | `altium_view.py pcb path Driver/C4_U_PHASE.1 Driver/U1_U_PHASE.16` |
 | **Routed length pad to pad, as Altium measures it** (tracks + arcs along the path, stubs excluded; `with via barrels` adds the via height from the stack-up) | `altium_view.py pcb length IC1.112 R50.2` |
 | **Every signal between two parts, through series resistors, length-matched** (DDR/SDRAM/LTDC groups) | `altium_view.py pcb xsignals IC1 U1 --ref FMC_SDCLK --tol 10 --group data=FMC_D*,FMC_NBL* [--z]` |
+| **Design rules, net classes and xSignals as set in the layout** (what length/width/clearance rule actually applies; whether a net split by a series resistor is joined into one xSignal) | `altium_view.py pcb rules [length]` |
+| Length matching the way the designer set it up: only the leg after the series resistor | add `--after-series` to `pcb xsignals` |
 | Same-layer copper gaps between different nets (spacing / creepage review) | `altium_view.py pcb clearance Power --max 3 --rows 200` |
 | Board-to-board connectors paired by pin position on both layouts | `altium_view.py pcb mate [C_10]` |
 | **Look at the layout, with marks** | `altium_view.py pcb render Driver --around U1_U_PHASE:20 --layers L4 --nets G_HS_U_PHASE,S_HS_U_PHASE --parts U1_U_PHASE --measure A B --mark x,y,text --labels [--bottom] -o out.png` |
