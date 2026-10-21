@@ -732,7 +732,21 @@ def cmd_render(B: Boards, args) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.collections import LineCollection, PatchCollection
-    from matplotlib.patches import Circle, Polygon as MPoly
+    from matplotlib.patches import Circle, PathPatch, Polygon as MPoly
+    from matplotlib.path import Path as MPath
+
+    def region_path(outer, holes):
+        # outer ring and its cut-outs wound opposite ways, so the holes stay
+        # empty under the non-zero fill rule
+        def ring(pts, ccw):
+            area = sum(pts[i - 1][0] * pts[i][1] - pts[i][0] * pts[i - 1][1] for i in range(len(pts)))
+            return list(pts) if (area > 0) == ccw else list(pts)[::-1]
+        verts, codes = [], []
+        for pts, ccw in [(outer, True)] + [(h, False) for h in holes if len(h) >= 3]:
+            r = ring(pts, ccw)
+            verts += r + [r[0]]
+            codes += [MPath.MOVETO] + [MPath.LINETO] * (len(r) - 1) + [MPath.CLOSEPOLY]
+        return MPath(verts, codes)
 
     o = parse_render_args(args)
     board_word = o["board"]
@@ -796,6 +810,12 @@ def cmd_render(B: Boards, args) -> None:
     def inside(x, y, m=0):
         return x0 - m <= x <= x1 + m and y0 - m <= y <= y1 + m
 
+    def overlaps(xa, ya, xb, yb, m=0):
+        # bounding box [xa..xb] x [ya..yb] touches the window: a long track or a
+        # board-wide pour crosses the view even when every vertex lies outside it
+        return (min(xa, xb) <= x1 + m and max(xa, xb) >= x0 - m
+                and min(ya, yb) <= y1 + m and max(ya, yb) >= y0 - m)
+
     def style(layer, net):
         if focus:
             if net in hl:
@@ -817,23 +837,26 @@ def cmd_render(B: Boards, args) -> None:
         for r in pcb["regions"]:
             if r["layer"] != layer or r["keepout"] or len(r["points"]) < 3:
                 continue
-            if not any(inside(px, py, 20) for px, py in r["points"][:: max(1, len(r["points"]) // 20)]):
+            rx = [p[0] for p in r["points"]]
+            ry = [p[1] for p in r["points"]]
+            if not overlaps(min(rx), min(ry), max(rx), max(ry)):
                 continue
             c, a = style(layer, r["net"])
-            ax.add_patch(MPoly(r["points"], closed=True, facecolor=c, edgecolor="none",
-                               alpha=a * 0.6, zorder=z))
+            ax.add_patch(PathPatch(region_path(r["points"], r.get("holes") or []),
+                                   facecolor=c, edgecolor="none", alpha=a * 0.6, zorder=z))
         segs, widths, scol = [], [], []
         for t in pcb["tracks"]:
             if t["layer"] != layer or t["keepout"]:
                 continue
-            if not (inside(t["x1"], t["y1"], 5) or inside(t["x2"], t["y2"], 5)):
+            if not overlaps(t["x1"], t["y1"], t["x2"], t["y2"], 5):
                 continue
             c, a = style(layer, t["net"])
             segs.append([(t["x1"], t["y1"]), (t["x2"], t["y2"])])
             widths.append(max(0.3, t["width"] * pt_per_mm))
             scol.append(matplotlib.colors.to_rgba(c, a))
         for a_ in pcb["arcs"]:
-            if a_["layer"] != layer or a_["keepout"] or not inside(a_["cx"], a_["cy"], 5):
+            if a_["layer"] != layer or a_["keepout"] or not overlaps(
+                    a_["cx"] - a_["r"], a_["cy"] - a_["r"], a_["cx"] + a_["r"], a_["cy"] + a_["r"], 5):
                 continue
             sweep = (a_["end"] - a_["start"]) % 360 or 360
             n = max(4, int(sweep / 10))
